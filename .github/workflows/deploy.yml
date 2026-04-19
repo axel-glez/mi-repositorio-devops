@@ -1,0 +1,56 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout codigo
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install -r app/requirements.txt
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Subir codigo a S3
+        run: |
+          zip -r mi-app.zip . -x "*.git*"
+          aws s3 cp mi-app.zip s3://mi-pipeline-source-378281827541/mi-app.zip
+
+      - name: Desplegar en EC2 via SSM
+        run: |
+          aws ssm send-command \
+            --instance-ids "i-03bfc1e754137822e" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "cd /home/ubuntu",
+              "rm -rf mi-app",
+              "mkdir -p mi-app",
+              "aws s3 cp s3://mi-pipeline-source-378281827541/mi-app.zip .",
+              "sudo apt-get update",
+              "sudo apt-get install -y unzip",
+              "unzip -o mi-app.zip -d mi-app",
+              "cd mi-app/app",
+              "sudo docker build -t mi-app .",
+              "sudo docker stop mi-app-container || true",
+              "sudo docker rm mi-app-container || true",
+              "sudo docker run -d --name mi-app-container -p 5000:5000 mi-app"
+            ]' \
+            --region us-east-1
